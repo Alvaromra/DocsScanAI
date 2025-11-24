@@ -1,0 +1,46 @@
+version: "3.9"
+
+services:
+  api:
+    build: .
+    command: ["./start.sh"]
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    networks:
+      - ai_network
+    depends_on:
+      - db
+
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-docsia}
+      POSTGRES_USER: ${POSTGRES_USER:-docsia_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-senha_super_secreta}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - ai_network
+
+  # opcional: se quiser rodar ollama dentro do compose, descomente
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama_data:/root/.ollama
+  #   networks:
+  #     - ai_network
+
+networks:
+  ai_network:
+
+volumes:
+  pgdata:
+  # ollama_data:

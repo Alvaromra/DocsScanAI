@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+python-multipart
+pydantic
+pdfplumber
+transformers
+torch
+datasets
+sentencepiece

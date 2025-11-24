@@ -1,0 +1,11 @@
+{
+  "build": {
+    "builder": "NIXPACKS"
+  },
+  "deploy": {
+    "numReplicas": 1,
+    "healthcheckPath": "/",
+    "healthcheckTimeout": 300,
+    "startCommand": "gunicorn app:app --bind 0.0.0.0:${PORT:-5050}"
+  }
+}

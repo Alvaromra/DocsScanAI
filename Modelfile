@@ -1,0 +1,7 @@
+FROM ./models/minha-lora-merged.gguf
+
+PARAMETER temperature 0.7
+PARAMETER num_ctx 2048
+
+TEMPLATE """{{ .Prompt }}"""
+

@@ -1,0 +1,28 @@
+# Python cache/virtualenv
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.env
+.env.*
+venv/
+.venv/
+
+# Logs
+*.log
+
+# IDE/OS files
+.DS_Store
+.idea/
+.vscode/
+
+# Large/local artifacts (not for version control)
+models/
+llama.cpp/
+railway_full/
+railway_upload/
+projeto_railway_completo.zip
+project/projeto_railway.zip
+project/app/models/
+uploads/
+saida/

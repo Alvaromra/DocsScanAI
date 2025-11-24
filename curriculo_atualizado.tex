@@ -1,0 +1,184 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% PROFESSIONAL CV – Alvaro Marcal de Araujo
+% One-page International Version – Final (with revised TA section)
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\documentclass[a4paper,10pt]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[english]{babel}
+\usepackage{geometry}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{fontawesome}
+\usepackage{tabularx}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+
+% --- COLORS ---
+\definecolor{darkblue}{HTML}{002244}
+\definecolor{darkgray}{HTML}{333333}
+\definecolor{graytext}{HTML}{555555}
+
+% --- PAGE SETUP ---
+\geometry{top=1.3cm, bottom=1.3cm, left=1.4cm, right=1.4cm}
+\pagestyle{fancy}
+\fancyhf{}
+\renewcommand{\headrulewidth}{0pt}
+
+% --- LINKS ---
+\hypersetup{
+    colorlinks=true,
+    urlcolor=darkblue,
+    linkcolor=darkblue
+}
+
+% --- SECTION STYLE ---
+\titleformat{\section}{
+  \vspace{4pt}\large\scshape\color{darkblue}
+}{}{0em}{}[\color{darkblue}\titlerule \vspace{-4pt}]
+
+% --- SUBHEADING FORMAT ---
+\newcommand{\resumeSubheading}[4]{
+  \item
+  \begin{tabular*}{\textwidth}{l@{\extracolsep{\fill}}r}
+    \textbf{#1} & {\small #2} \\
+    \textit{\small #3} & {\small \textit{#4}} \\
+  \end{tabular*}
+  \vspace{-2pt}
+}
+
+% --- PERSONAL DATA ---
+\newcommand{\name}{\textbf{\Huge Alvaro Marcal de Araujo}}
+\newcommand{\role}{\textcolor{darkgray}{Network, Infrastructure \& DevOps Engineering Student}}
+\newcommand{\address}{Brasília, DF, Brazil}
+\newcommand{\phone}{(+55) 61 98297-2948}
+\newcommand{\emaila}{alvaromra2@gmail.com}
+\newcommand{\linkedin}{\href{https://www.linkedin.com/in/alvaro-marcal-23b310329}{linkedin.com/in/alvaro-marcal-23b310329}}
+\newcommand{\github}{\href{https://github.com/Alvaromra}{github.com/Alvaromra}}
+
+%=============================================================
+\begin{document}
+\small
+\begin{center}
+    {\name}\\[2pt]
+    {\role}\\[4pt]
+    \faMapMarker\ \address \quad
+    \faPhone\ \phone \quad
+    \faEnvelope\ \href{mailto:\emaila}{\emaila}\\[2pt]
+    \faLinkedin\ \linkedin \quad
+    \faGithub\ \github
+\end{center}
+
+%---------------------- SUMMARY ----------------------
+\section{Professional Summary}
+Network and Communications Engineering undergraduate focused on infrastructure, DevOps, and automation.\\
+Experienced in Linux administration, Docker, Ansible, Jenkins, and OpenShift, as well as CI/CD pipelines and API automation.\\
+Hands-on experience deploying WSO2, JFrog, Apache, Nginx, and MySQL using Docker.\\
+Full-stack developer proficient in \textbf{Python, JavaScript (Node.js, React), HTML, and SQL}.\\
+Creator of the \textbf{SalaryAI Suite}, an AI-powered self-learning application with performance dashboards and feedback-based retraining.\\
+Eager to combine networking, automation, and AI to design secure, scalable, and intelligent infrastructures.
+
+%---------------------- EXPERIENCE ----------------------
+\section{Professional Experience}
+\begin{itemize}[leftmargin=0in, label={}, itemsep=5pt]
+
+  \resumeSubheading
+    {Network, Infrastructure \& DevOps Intern}
+    {Apr 2025 -- Present}
+    {Heiliger Tecnologia e Software LTDA}
+    {Brasília, DF, Brazil}
+  \begin{itemize}[leftmargin=0.3in, itemsep=2pt]
+    \item Designed and implemented a \textbf{CI/CD automation pipeline} using \textbf{Ansible} for the WSO2 Micro Integrator, applying Infrastructure as Code (IaC) principles.
+    \item Deployed and managed Docker containers with \textbf{WSO2 API Manager, JFrog Artifactory, Nginx, Apache, and MySQL}.
+    \item Automated network provisioning (VPCs, firewalls, VPNs) and centralized credential management using Ansible Vault.
+  \end{itemize}
+
+  \resumeSubheading
+    {Teaching Assistant — Computer Network Fundamentals}
+    {Mar 2024 -- Aug 2024}
+    {University of Brasília (UnB)}
+    {Brasília, DF, Brazil}
+  \begin{itemize}[leftmargin=0.3in, itemsep=2pt]
+    \item Created hands-on exercises focused on the essential fundamentals of computer networks.
+    \item Conducted tutoring sessions to assist students with lab activities and deepen their understanding of the subject.
+    \item Developed key skills in time management, communication, and teamwork.
+  \end{itemize}
+
+  \resumeSubheading
+    {Creative Asset Approval Workflow (Pipefy Platform)}
+    {Oct 2025}
+    {Pipefy Challenge / Process Automation Project}
+    {Remote}
+  \begin{itemize}[leftmargin=0.3in, itemsep=2pt]
+    \item Designed a complete approval workflow integrating \textbf{AI-driven triage, summarization, and sentiment analysis}.
+    \item Developed a \textbf{Python automation script} using the \textbf{Pipefy GraphQL API} to automate testing and report generation.
+  \end{itemize}
+
+\end{itemize}
+
+%---------------------- PROJECTS ----------------------
+\section{Projects}
+\textbf{SalaryAI Suite – Self-Learning Neural Engine} \hfill \textit{In Development}\\
+\begin{itemize}[leftmargin=0.3in, itemsep=2pt]
+  \item Full AI-powered salary prediction platform built with \textbf{Python (Flask + SQLite)} and modular architecture (app/, templates/, static/, utils/, services/).
+  \item Implements user authentication, supervised feedback, and continuous retraining with data visualization dashboards.
+  \item Runs entirely on local environments with optimized performance and a hybrid dark/light interface.
+\end{itemize}
+
+\textbf{Document Analyzer – AI-Powered Document Intelligence API} \hfill \textit{2025}\\
+\begin{itemize}[leftmargin=0.3in, itemsep=2pt]
+  \item Built with \textbf{FastAPI + Postgres} and packaged via \textbf{Docker Compose} for reproducible deployments (local or Railway/Render/Fly.io).
+  \item Supports PDF/text uploads, health checks, and analysis endpoints, ready for local \textbf{Ollama/LLM} integration.
+  \item Provides a stateless API layer that can scale horizontally while keeping model files decoupled from the web service.
+\end{itemize}
+
+\textbf{Primeiro-Imovel-Pro – Property Investment Planner} \hfill \textit{2025}\\
+\begin{itemize}[leftmargin=0.3in, itemsep=2pt]
+  \item Financial planning app to compare mortgage scenarios, simulate down payments, and project monthly installments under different interest rates.
+  \item Built with \textbf{Python} and \textbf{Flask}, leveraging \textbf{Pandas} for amortization math and exporting sharable PDF/CSV reports.
+  \item Includes alerting rules for safe debt-to-income ratios and automation hooks to sync updated rate tables from external APIs.
+\end{itemize}
+
+\textbf{Universal Document Scanner CLI} \hfill \textit{2025}\\
+\begin{itemize}[leftmargin=0.3in, itemsep=2pt]
+  \item Python-based scanner that ingests \textbf{PDF, DOCX, CSV, XLSX, HTML, JSON, TXT} and other text formats with automatic dependency checks.
+  \item Extracts raw text, detects patterns (emails, IDs, URLs, dates, monetary values), classifies document type, and exports structured reports (CSV, XLSX, JSON, PDF).
+  \item Generates summaries of headings, paragraphs, bullets, and statistics to streamline downstream NLP/LLM processing.
+\end{itemize}
+
+%---------------------- TECHNICAL SKILLS ----------------------
+\section{Technical Skills}
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\textbf{Automation \& DevOps:} & Ansible, Jenkins, GitLab CI/CD, JFrog Artifactory, Infrastructure as Code (IaC) \\
+\textbf{API \& Integration:} & WSO2 API Manager (APIM), WSO2 Micro Integrator (MI), REST APIs, JSON/YAML, GraphQL \\
+\textbf{Containers \& Cloud:} & Docker, Docker Compose, Red Hat OpenShift, Nginx, Apache, MySQL, Virtual Private Cloud (VPC) \\
+\textbf{Monitoring \& Observability:} & Datadog, Zabbix, Wireshark, System Metrics, Log Analysis \\
+\textbf{Operating Systems:} & Advanced Linux Administration (Ubuntu, Red Hat), Bash, Windows Server \\
+\textbf{Networking \& Security:} & TCP/IP, OSPF, BGP, VLANs, Firewalls, VPNs, DNS, Proxy, Reverse Proxy, Load Balancing (Nginx, HAProxy) \\
+\textbf{Process Automation:} & Pipefy, AI Prompt Engineering, BPM, Low/No-Code Automation \\
+\textbf{Full-Stack Development:} & Python, Node.js, React, HTML, CSS, SQL/MySQL
+\end{tabularx}
+
+%---------------------- EDUCATION ----------------------
+\section{Education}
+\textbf{Bachelor of Science in Network and Communications Engineering} \hfill \textbf{Expected: Dec 2026} \\
+University of Brasília (UnB) — Faculty of Technology (FT) — Brasília, DF, Brazil \\
+\textit{IRA (Brazilian GPA, scale 0–5): 3.98 / 5.00 (≈ 3.18 / 4.00 U.S. GPA equivalent)}
+
+%---------------------- CERTIFICATIONS ----------------------
+\section{Certifications \& Languages}
+\begin{itemize}[leftmargin=0in, label={}, itemsep=2pt]
+  \item Pipefy Academy — Process Implementation and Automation Certification (2025)
+  \item Python 3: From Basic to Advanced with Real Projects — Udemy
+  \item \textbf{Languages:} Portuguese (Native); English (Advanced) — Full proficiency in reading, speaking, listening, and writing
+\end{itemize}
+
+\vspace{3pt}
+\begin{center}
+    \textcolor{graytext}{\small Last updated: November 2025 \quad | \quad © 2025 Alvaro Marcal de Araujo}
+\end{center}
+
+\end{document}
