@@ -34,7 +34,8 @@ O script instala dependências básicas automaticamente (pandas, PyPDF2, openpyx
 cd project
 docker compose up --build
 # API em http://localhost:8000 (FastAPI)
-# WebApp Flask em http://localhost:5000
+# WebApp Flask em http://localhost:5001
+# Ollama (LLM) exposto em http://localhost:11434
 ```
 Endpoints principais:
 - `GET /health`
@@ -48,3 +49,4 @@ Mais detalhes e dicas de deploy em `project/README_DEPLOY.md`.
 - A pasta `documentos/` permanece local/privada e está no `.gitignore`.
 - Modelos pesados e pastas geradas (models/, uploads/, saida/, etc.) também são ignorados no Git.
 - O serviço Flask monta o repositório local via volume (`..:/workspace`), reutilizando seus arquivos e pipelines já existentes.
+- O serviço Ollama roda no Compose (porta 11434) para a camada de IA. Substitua o modelo em `app.py` se quiser outro (default `llama3.1:8b`).

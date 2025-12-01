@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # app.py – Mini Web App Premium (Salary AI Suite style)
 
-from flask import Flask, request, render_template_string, redirect, url_for
+from flask import Flask, request, render_template_string, redirect, url_for, jsonify
 from pathlib import Path
 import subprocess
 import json
@@ -12,6 +12,10 @@ from datetime import datetime
 from typing import Optional, Tuple, Dict, List
 import requests
 from concurrent.futures import ThreadPoolExecutor, Future
+try:
+    from vectorizer import Vectorizer
+except Exception:
+    Vectorizer = None
 import threading
 import re
 import string
@@ -268,6 +272,39 @@ def select_relevant_sections(text: str, top_k: int = 3) -> List[str]:
     return scored[:top_k]
 
 
+def select_with_vectorizer(text: str, query: str = "resuma em JSON estruturado", top_k: int = 3) -> List[str]:
+    """
+    Seleção opcional usando hivellm/vectorizer, se instalado.
+    Fallback seguro: se der erro ou lib ausente, retorna lista vazia.
+    """
+    if not Vectorizer:
+        return []
+    try:
+        chunks = chunk_text(text)
+        if not chunks:
+            return []
+        vec = Vectorizer()
+        # Muitos wrappers de embedding expõem .embed; se não houver, aborta.
+        if not hasattr(vec, "embed"):
+            return []
+        chunk_vecs = vec.embed(chunks)
+        query_vec = vec.embed([query])[0]
+        # Similaridade coseno manual, sem depender de outras libs
+        def cosine(a, b):
+            import math
+            dot = sum(x*y for x, y in zip(a, b))
+            na = math.sqrt(sum(x*x for x in a))
+            nb = math.sqrt(sum(y*y for y in b))
+            return dot / (na * nb + 1e-9)
+        scored = []
+        for seg, v in zip(chunks, chunk_vecs):
+            scored.append((cosine(query_vec, v), seg))
+        scored.sort(reverse=True, key=lambda t: t[0])
+        return [s for _, s in scored[:top_k]]
+    except Exception:
+        return []
+
+
 def extract_focus_sections(text: str, max_len: int = 800) -> Dict[str, List[str]]:
     entities = re.findall(r"\b[A-Z][A-Za-zÀ-ÖØ-öø-ÿ]{2,}(?:\s+[A-Z][A-Za-zÀ-ÖØ-öø-ÿ]{2,})*\b", text)
     dates = re.findall(r"\b\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\b|\b\d{4}\b", text)
@@ -297,7 +334,8 @@ def build_focused_prompt(file_name: str, text: str, doc_type: Optional[str] = No
     text = normalize_text(text)
     focus = extract_focus_sections(text)
     trimmed_text = text[:6000]
-    top_segments = select_relevant_sections(text)
+    vec_segments = select_with_vectorizer(text, top_k=3)
+    top_segments = vec_segments if vec_segments else select_relevant_sections(text)
 
     parts = ["Você é um analista especializado em documentos.", "Responda APENAS em JSON válido com campos:",
              "{\n  \"tipo_documento\": \"...\",\n  \"resumo\": \"...\",\n  \"palavras_chave\": [...],\n  \"entidades\": [...],\n  \"datas_importantes\": [...],\n  \"valores_monetarios\": [...],\n  \"riscos\": [...],\n  \"observacoes\": \"...\"\n}"]
@@ -2307,6 +2345,25 @@ def edit_ia(file_name):
     </html>
     """
     return render_template_string(template, file_name=file_name, current=current)
+
+
+@app.route("/analisar", methods=["POST"])
+def api_analisar():
+    """Endpoint simples para análise via JSON."""
+    data = request.get_json(force=True)
+    texto = data.get("texto", "")
+    arquivo = data.get("arquivo", "api_input.txt")
+    if not texto.strip():
+        return jsonify({"error": "campo 'texto' vazio"}), 400
+
+    prompt = build_focused_prompt(arquivo, texto)
+    raw = call_local_llm(prompt, model=OLLAMA_MODEL_ANALYSIS)
+    parsed = _parse_json_response(raw) or {}
+    return jsonify({
+        "arquivo": arquivo,
+        "response": raw,
+        "parsed": parsed
+    })
 
 # ==========================
 # Main
