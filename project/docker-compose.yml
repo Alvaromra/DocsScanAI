@@ -14,6 +14,7 @@ services:
       - ai_network
     depends_on:
       - db
+      - flask
 
   db:
     image: postgres:16
@@ -27,6 +28,21 @@ services:
       - pgdata:/var/lib/postgresql/data
     networks:
       - ai_network
+
+  flask:
+    build: .
+    command: ["python", "/workspace/app.py", "--host", "0.0.0.0", "--port", "5000"]
+    working_dir: /workspace
+    env_file:
+      - .env
+    ports:
+      - "5000:5000"
+    volumes:
+      - ..:/workspace
+    networks:
+      - ai_network
+    depends_on:
+      - db
 
   # opcional: se quiser rodar ollama dentro do compose, descomente
   # ollama:

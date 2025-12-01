@@ -3,6 +3,13 @@ uvicorn
 python-multipart
 pydantic
 pdfplumber
+flask
+requests
+PyPDF2
+openpyxl
+python-docx
+reportlab
+pandas
 transformers
 torch
 datasets

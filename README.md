@@ -29,11 +29,12 @@ Saídas geradas em `./saida/`:
 
 O script instala dependências básicas automaticamente (pandas, PyPDF2, openpyxl, python-docx, reportlab). Se a instalação falhar, instale manualmente com pip e rode de novo.
 
-## Como rodar a API (Docker Compose)
+## Como rodar a API + WebApp (Docker Compose)
 ```bash
 cd project
 docker compose up --build
-# API em http://localhost:8000
+# API em http://localhost:8000 (FastAPI)
+# WebApp Flask em http://localhost:5000
 ```
 Endpoints principais:
 - `GET /health`
@@ -46,3 +47,4 @@ Mais detalhes e dicas de deploy em `project/README_DEPLOY.md`.
 ## Observações
 - A pasta `documentos/` permanece local/privada e está no `.gitignore`.
 - Modelos pesados e pastas geradas (models/, uploads/, saida/, etc.) também são ignorados no Git.
+- O serviço Flask monta o repositório local via volume (`..:/workspace`), reutilizando seus arquivos e pipelines já existentes.
