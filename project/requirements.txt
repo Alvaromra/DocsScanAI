@@ -7,3 +7,5 @@ transformers
 torch
 datasets
 sentencepiece
+sqlalchemy
+psycopg2-binary

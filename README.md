@@ -39,6 +39,7 @@ Endpoints principais:
 - `GET /health`
 - `POST /analisar` (texto)
 - `POST /upload` (pdf/txt)
+- `GET /` → Web UI simples para enviar arquivo e listar análises salvas no Postgres
 
 Mais detalhes e dicas de deploy em `project/README_DEPLOY.md`.
 
