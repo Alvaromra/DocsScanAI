@@ -2,15 +2,20 @@ import os
 import io
 import logging
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Tuple
+import json
+from pathlib import Path
 
 import pdfplumber
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
+import numpy as np
 from sqlalchemy import Column, DateTime, Integer, String, Text, create_engine
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
 try:
     from transformers import pipeline  # opcional, só se modelos locais estiverem presentes
@@ -40,6 +45,16 @@ DATABASE_URL = os.getenv(
     "DATABASE_URL",
     f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}",
 )
+# --- RAG / IA setup ---
+CORPUS_DIRS = [
+    os.getenv("CORPUS_DIR", "/workspace/saida/texto_bruto"),
+    "/app/saida/texto_bruto",
+]
+MAX_CORPUS_FILES = int(os.getenv("MAX_CORPUS_FILES", "200"))
+MAX_TEXT_PER_FILE = int(os.getenv("MAX_TEXT_PER_FILE", "4000"))
+RAG_TOP_K = int(os.getenv("RAG_TOP_K", "3"))
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True, future=True)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
@@ -111,6 +126,108 @@ class DocumentOut(BaseModel):
 
     class Config:
         orm_mode = True
+
+
+def _load_corpus() -> Tuple[Optional[TfidfVectorizer], Optional[np.ndarray], List[str], List[str]]:
+    paths = []
+    for base in CORPUS_DIRS:
+        if not base:
+            continue
+        p = Path(base)
+        if p.exists():
+            paths.extend(sorted(p.glob("*.txt")))
+    texts = []
+    titles = []
+    raw_texts = []
+    for path in paths[:MAX_CORPUS_FILES]:
+        try:
+            txt = path.read_text(encoding="utf-8", errors="ignore")
+            if not txt.strip():
+                continue
+            truncated = txt[:MAX_TEXT_PER_FILE]
+            texts.append(truncated)
+            raw_texts.append(truncated)
+            titles.append(path.name)
+        except Exception:
+            continue
+    if not texts:
+        return None, None, [], []
+    vectorizer = TfidfVectorizer(max_features=5000, stop_words="portuguese")
+    matrix = vectorizer.fit_transform(texts)
+    return vectorizer, matrix, titles, raw_texts
+
+
+_VECTORIZER, _MATRIX, _TITLES, _RAW_TEXTS = _load_corpus()
+if _VECTORIZER is None:
+    logger.info("RAG: corpus não carregado (pasta vazia ou ausente)")
+else:
+    logger.info("RAG: corpus carregado com %d arquivos", len(_TITLES))
+
+
+def retrieve_contexts(query: str, top_k: int = RAG_TOP_K) -> List[str]:
+    if _VECTORIZER is None or _MATRIX is None:
+        return []
+    try:
+        q_vec = _VECTORIZER.transform([query])
+        sims = cosine_similarity(q_vec, _MATRIX).flatten()
+        idxs = sims.argsort()[::-1][:top_k]
+        contexts = []
+        for idx in idxs:
+            if sims[idx] <= 0:
+                continue
+            contexts.append(f"[{_TITLES[idx]}]\n{_RAW_TEXTS[idx]}")
+        return contexts
+    except Exception as exc:
+        logger.warning("RAG retrieve falhou: %s", exc)
+        return []
+
+
+def call_ollama(prompt: str, model: str = OLLAMA_MODEL) -> str:
+    import requests
+    try:
+        resp = requests.post(
+            f"{OLLAMA_URL.rstrip('/')}/api/generate",
+            json={"model": model, "prompt": prompt, "stream": False},
+            timeout=120,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("response", "")
+    except Exception as exc:
+        logger.warning("Ollama indisponível: %s", exc)
+        return ""
+
+
+def analyze_with_rag(texto: str, arquivo: str, mode: str = "baseline") -> AnaliseResponse:
+    use_rag = mode == "rag"
+    if use_rag:
+        contexts = retrieve_contexts(texto)
+        if contexts:
+            prompt = (
+                "Você é um assistente que responde APENAS em JSON válido com o schema abaixo.\n"
+                "Use o contexto fornecido, nada além dele.\n\n"
+                f"Contexto:\n---\n{chr(10).join(contexts)}\n---\n"
+                f"Entrada:\n{texto}\n\n"
+                "Schema:\n"
+                "{\n"
+                '  "tipo_documento": "",\n'
+                '  "resumo": "",\n'
+                '  "palavras_chave": [],\n'
+                '  "entidades": [],\n'
+                '  "datas_importantes": [],\n'
+                '  "valores_monetarios": [],\n'
+                '  "riscos": [],\n'
+                '  "observacoes": ""\n'
+                "}\n"
+            )
+            raw = call_ollama(prompt)
+            if raw:
+                try:
+                    parsed = json.loads(raw)
+                    return AnaliseResponse(**parsed, arquivo=arquivo)
+                except Exception:
+                    pass
+    return dummy_analysis(texto, arquivo)
 
 
 def extract_text_from_pdf(file_bytes: bytes) -> str:
@@ -246,14 +363,14 @@ def get_document(doc_id: int, db: Session = Depends(get_db)):
 
 
 @app.post("/analisar", response_model=AnaliseResponse)
-def analisar(req: AnaliseRequest, db: Session = Depends(get_db), persist: bool = True):
-    result = dummy_analysis(req.texto, req.arquivo)
+def analisar(req: AnaliseRequest, db: Session = Depends(get_db), persist: bool = True, mode: str = "baseline"):
+    result = analyze_with_rag(req.texto, req.arquivo, mode=mode)
     if persist:
         persist_analysis(db, req.arquivo, content_type="text/plain", size_bytes=len(req.texto.encode("utf-8")), result=result)
     return result
 
 
-async def _analyze_upload(file: UploadFile, db: Session, persist: bool = True) -> AnaliseResponse:
+async def _analyze_upload(file: UploadFile, db: Session, persist: bool = True, mode: str = "baseline") -> AnaliseResponse:
     content = await file.read()
     texto = ""
     if file.filename.lower().endswith(".pdf"):
@@ -263,7 +380,7 @@ async def _analyze_upload(file: UploadFile, db: Session, persist: bool = True) -
             texto = content.decode("utf-8", errors="ignore")
         except Exception:
             texto = ""
-    result = dummy_analysis(texto, file.filename)
+    result = analyze_with_rag(texto, file.filename, mode=mode)
     if persist:
         persist_analysis(
             db,
@@ -276,11 +393,11 @@ async def _analyze_upload(file: UploadFile, db: Session, persist: bool = True) -
 
 
 @app.post("/upload", response_model=AnaliseResponse)
-async def upload(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    return await _analyze_upload(file, db, persist=True)
+async def upload(file: UploadFile = File(...), db: Session = Depends(get_db), mode: str = "baseline"):
+    return await _analyze_upload(file, db, persist=True, mode=mode)
 
 
 @app.post("/web/upload", response_class=RedirectResponse)
-async def web_upload(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    await _analyze_upload(file, db, persist=True)
+async def web_upload(file: UploadFile = File(...), db: Session = Depends(get_db), mode: str = "baseline"):
+    await _analyze_upload(file, db, persist=True, mode=mode)
     return RedirectResponse(url="/", status_code=303)
