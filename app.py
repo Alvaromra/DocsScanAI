@@ -2368,6 +2368,109 @@ def edit_ia(file_name):
     """
     return render_template_string(template, file_name=file_name, current=current)
 
+# ==========================
+# Chatbot simples (Ollama)
+# ==========================
+
+CHAT_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8">
+  <title>Chatbot IA</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body { background: #0b1527; color: #f8fbff; }
+    .shell { max-width: 960px; margin: 0 auto; padding: 24px; }
+    .chat-box { background: #0f1c33; border-radius: 16px; padding: 16px; border: 1px solid rgba(255,255,255,0.08); }
+    .msg-user { background: #1e3a8a; border-radius: 12px; padding: 12px; margin-bottom: 8px; }
+    .msg-bot { background: #111827; border-radius: 12px; padding: 12px; margin-bottom: 8px; }
+    .meta { font-size: 12px; color: #9ca3af; }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <div>
+        <h1 class="h4 mb-0">Chatbot IA</h1>
+        <small class="text-secondary">Conversas rápidas com o modelo configurado no Ollama.</small>
+      </div>
+      <a href="{{ url_for('home') }}" class="btn btn-outline-light btn-sm">Voltar</a>
+    </div>
+
+    <div class="chat-box mb-3">
+      {% if history %}
+        {% for m in history %}
+          <div class="{{ 'msg-user' if m.role=='user' else 'msg-bot' }}">
+            <div class="meta">{{ m.role|capitalize }} · {{ m.ts }}</div>
+            <div>{{ m.content }}</div>
+          </div>
+        {% endfor %}
+      {% else %}
+        <p class="text-secondary">Sem mensagens ainda. Envie algo abaixo.</p>
+      {% endif %}
+    </div>
+
+    <form method="post" class="card p-3 bg-dark border-0">
+      <label class="form-label text-secondary">Mensagem</label>
+      <textarea name="message" class="form-control bg-dark text-light" rows="3" required></textarea>
+      <div class="d-flex gap-2 mt-2">
+        <button class="btn btn-primary">Enviar</button>
+        <a class="btn btn-outline-light" href="{{ url_for('chat') }}">Limpar tela</a>
+      </div>
+    </form>
+  </div>
+</body>
+</html>
+"""
+
+chat_history = []
+
+
+def chat_completion(message: str, history: list) -> str:
+    """Gera resposta usando histórico curto + Ollama."""
+    try:
+        trimmed = history[-6:]
+        parts = []
+        for m in trimmed:
+            role = "Usuário" if m["role"] == "user" else "Assistente"
+            parts.append(f"{role}: {m['content']}")
+        parts.append(f"Usuário: {message}")
+        parts.append("Assistente:")
+        prompt = "\n".join(parts)
+        return call_local_llm(prompt, model=OLLAMA_MODEL_GENERAL)
+    except Exception:
+        return ""
+
+
+@app.route("/chat", methods=["GET", "POST"])
+def chat():
+    global chat_history
+    if request.method == "POST":
+        msg = request.form.get("message", "").strip()
+        if msg:
+            resp = chat_completion(msg, chat_history) or "(sem resposta)"
+            ts = datetime.utcnow().isoformat()
+            chat_history.append({"role": "user", "content": msg, "ts": ts})
+            chat_history.append({"role": "assistant", "content": resp, "ts": datetime.utcnow().isoformat()})
+        return redirect(url_for("chat"))
+    return render_template_string(CHAT_TEMPLATE, history=chat_history)
+
+
+@app.route("/api/chat", methods=["POST"])
+def api_chat():
+    global chat_history
+    data = request.get_json(force=True) or {}
+    msg = data.get("message", "")
+    if not msg.strip():
+        return jsonify({"error": "message vazio"}), 400
+    resp = chat_completion(msg, chat_history) or "(sem resposta)"
+    ts = datetime.utcnow().isoformat()
+    chat_history.append({"role": "user", "content": msg, "ts": ts})
+    chat_history.append({"role": "assistant", "content": resp, "ts": datetime.utcnow().isoformat()})
+    return jsonify({"response": resp, "history_length": len(chat_history)})
+
 
 @app.route("/analisar", methods=["POST"])
 def api_analisar():
