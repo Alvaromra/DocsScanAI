@@ -42,6 +42,7 @@ Endpoints principais:
 - `POST /analisar` (texto)
 - `POST /upload` (pdf/txt)
 - `GET /` → Web UI simples para enviar arquivo e listar análises salvas no Postgres
+- Modos: `mode=baseline` (default) ou `mode=rag` para usar contexto do corpus (pasta `saida/texto_bruto` montada no container).
 
 Mais detalhes e dicas de deploy em `project/README_DEPLOY.md`.
 
@@ -50,3 +51,4 @@ Mais detalhes e dicas de deploy em `project/README_DEPLOY.md`.
 - Modelos pesados e pastas geradas (models/, uploads/, saida/, etc.) também são ignorados no Git.
 - O serviço Flask monta o repositório local via volume (`..:/workspace`), reutilizando seus arquivos e pipelines já existentes.
 - O serviço Ollama roda no Compose (porta 11434) para a camada de IA. Substitua o modelo em `app.py` se quiser outro (default `llama3.1:8b`).
+- Para RAG: coloque textos em `saida/texto_bruto/` (gerado pelo scanner) e chame `POST /analisar?mode=rag` ou `POST /upload?mode=rag` para recuperar contexto antes do LLM. Se Ollama não estiver disponível, o endpoint cai no modo simplificado.

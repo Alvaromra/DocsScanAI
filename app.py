@@ -1814,6 +1814,9 @@ IA_STATUS_TEMPLATE = """
                     <button class="btn btn-outline-secondary btn-sm">Refazer (Geral)</button>
                   </form>
                   <a class="btn btn-outline-light btn-sm" href="{{ url_for('ver', file_name=e.file) }}">Ver</a>
+                  <form class="d-inline" method="post" action="{{ url_for('delete_ia_entry', file_name=e.file) }}" onsubmit="return confirm('Excluir arquivos de análise para {{ e.file }}?');">
+                    <button class="btn btn-outline-danger btn-sm">Excluir</button>
+                  </form>
                 </td>
               </tr>
             {% endfor %}
@@ -2244,6 +2247,25 @@ def reprocess_ia(file_name):
     mode = request.form.get("mode")
     model = OLLAMA_MODEL_ANALYSIS if mode != "general" else OLLAMA_MODEL_GENERAL
     ensure_ia_analysis(file_name, model=model)
+    return redirect(url_for('ia_status'))
+
+
+@app.route("/ia/delete/<file_name>", methods=["POST"])
+def delete_ia_entry(file_name):
+    safe = Path(file_name).name
+    targets = [
+        IA_DIR / f"{safe}.json",
+        IA_DIR / f"{safe}.json.raw.txt",
+        IA_DIR / f"{safe}",
+    ]
+    removed = False
+    for path in targets:
+        if path.exists():
+            try:
+                path.unlink()
+                removed = True
+            except Exception:
+                continue
     return redirect(url_for('ia_status'))
 
 

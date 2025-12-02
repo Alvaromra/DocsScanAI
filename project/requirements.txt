@@ -10,6 +10,7 @@ openpyxl
 python-docx
 reportlab
 pandas
+scikit-learn
 transformers
 torch
 datasets
