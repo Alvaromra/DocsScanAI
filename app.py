@@ -984,6 +984,7 @@ HOME_TEMPLATE = """
       <div class="mt-3 d-flex flex-wrap gap-2">
         <a href="{{ url_for('treino') }}" class="btn btn-warning text-dark fw-semibold">Painel de Treinamento</a>
         <a href="{{ url_for('ia_status') }}" class="btn btn-outline-light">Status IA</a>
+        <a href="{{ url_for('chat') }}" class="btn btn-outline-light">Chatbot IA</a>
         <button id="themeToggle" class="btn btn-outline-light">Alternar tema</button>
       </div>
     </div>
