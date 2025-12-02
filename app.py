@@ -20,6 +20,9 @@ import threading
 import re
 import string
 from textwrap import dedent
+import numpy as np
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
 _OLLAMA_BASE = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
 OLLAMA_URL = f"{_OLLAMA_BASE.rstrip('/')}/api/generate"
@@ -223,6 +226,30 @@ for d in [SAIDA_DIR, TEXT_DIR, IA_DIR, UPLOAD_DIR, TRAIN_DIR]:
 
 INDEX_JSON = SAIDA_DIR / "_docs_index.json"
 ANALISE_JSON = SAIDA_DIR / "analise_detalhada.json"
+CHAT_TOP_K = 3
+
+# corpus TF-IDF para chatbot (usa texto bruto do scanner)
+def _load_chat_corpus():
+    texts = []
+    titles = []
+    for path in sorted(TEXT_DIR.glob("*.txt")):
+        try:
+            txt = path.read_text(encoding="utf-8", errors="ignore")
+            if not txt.strip():
+                continue
+            texts.append(txt[:4000])
+            titles.append(path.name)
+        except Exception:
+            continue
+        if len(texts) >= 200:
+            break
+    if not texts:
+        return None, None, []
+    vect = TfidfVectorizer(max_features=5000, stop_words="portuguese")
+    matrix = vect.fit_transform(texts)
+    return vect, matrix, texts
+
+CHAT_VECTORIZER, CHAT_MATRIX, CHAT_RAW_TEXTS = _load_chat_corpus()
 
 executor = ThreadPoolExecutor(max_workers=2)
 pending_tasks: Dict[str, Future] = {}
@@ -2430,7 +2457,7 @@ chat_history = []
 
 
 def chat_completion(message: str, history: list) -> str:
-    """Gera resposta usando histórico curto + Ollama."""
+    """Gera resposta usando histórico curto + RAG básico sobre texto bruto."""
     try:
         trimmed = history[-6:]
         parts = []
@@ -2438,8 +2465,30 @@ def chat_completion(message: str, history: list) -> str:
             role = "Usuário" if m["role"] == "user" else "Assistente"
             parts.append(f"{role}: {m['content']}")
         parts.append(f"Usuário: {message}")
-        parts.append("Assistente:")
-        prompt = "\n".join(parts)
+
+        contexts = []
+        if CHAT_VECTORIZER is not None and CHAT_MATRIX is not None:
+            try:
+                q_vec = CHAT_VECTORIZER.transform([message])
+                sims = cosine_similarity(q_vec, CHAT_MATRIX).flatten()
+                idxs = sims.argsort()[::-1][:CHAT_TOP_K]
+                for idx in idxs:
+                    if sims[idx] <= 0:
+                        continue
+                    contexts.append(CHAT_RAW_TEXTS[idx])
+            except Exception:
+                contexts = []
+
+        prompt_blocks = []
+        if contexts:
+            prompt_blocks.append("Contexto recuperado:")
+            for i, ctx in enumerate(contexts, 1):
+                prompt_blocks.append(f"[{i}] {ctx[:1200]}")
+        prompt_blocks.append("Histórico curto:")
+        prompt_blocks.extend(parts)
+        prompt_blocks.append("Assistente:")
+
+        prompt = "\n\n".join(prompt_blocks)
         return call_local_llm(prompt, model=OLLAMA_MODEL_GENERAL)
     except Exception:
         return ""
