@@ -152,7 +152,7 @@ def _load_corpus() -> Tuple[Optional[TfidfVectorizer], Optional[np.ndarray], Lis
             continue
     if not texts:
         return None, None, [], []
-    vectorizer = TfidfVectorizer(max_features=5000, stop_words="portuguese")
+    vectorizer = TfidfVectorizer(max_features=5000, stop_words=None)
     matrix = vectorizer.fit_transform(texts)
     return vectorizer, matrix, titles, raw_texts
 

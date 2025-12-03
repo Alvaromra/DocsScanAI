@@ -245,7 +245,7 @@ def _load_chat_corpus():
             break
     if not texts:
         return None, None, []
-    vect = TfidfVectorizer(max_features=5000, stop_words="portuguese")
+    vect = TfidfVectorizer(max_features=5000, stop_words=None)
     matrix = vect.fit_transform(texts)
     return vect, matrix, texts
 
