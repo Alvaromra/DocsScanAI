@@ -16,6 +16,7 @@ from sqlalchemy import Column, DateTime, Integer, String, Text, create_engine
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+import time
 
 try:
     from transformers import pipeline  # opcional, só se modelos locais estiverem presentes
@@ -184,18 +185,20 @@ def retrieve_contexts(query: str, top_k: int = RAG_TOP_K) -> List[str]:
 
 def call_ollama(prompt: str, model: str = OLLAMA_MODEL) -> str:
     import requests
-    try:
-        resp = requests.post(
-            f"{OLLAMA_URL.rstrip('/')}/api/generate",
-            json={"model": model, "prompt": prompt, "stream": False},
-            timeout=120,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return data.get("response", "")
-    except Exception as exc:
-        logger.warning("Ollama indisponível: %s", exc)
-        return ""
+    for attempt in range(3):
+        try:
+            resp = requests.post(
+                f"{OLLAMA_URL.rstrip('/')}/api/generate",
+                json={"model": model, "prompt": prompt, "stream": False},
+                timeout=120,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("response", "")
+        except Exception as exc:
+            logger.warning("Ollama indisponível (tentativa %s): %s", attempt + 1, exc)
+            time.sleep(1.5 * (attempt + 1))
+    return ""
 
 
 def analyze_with_rag(texto: str, arquivo: str, mode: str = "baseline") -> AnaliseResponse:

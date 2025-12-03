@@ -2,6 +2,7 @@
 # app.py – Mini Web App Premium (Salary AI Suite style)
 
 from flask import Flask, request, render_template_string, redirect, url_for, jsonify
+from werkzeug.utils import secure_filename
 from pathlib import Path
 import subprocess
 import json
@@ -23,6 +24,7 @@ from textwrap import dedent
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+import time
 
 _OLLAMA_BASE = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
 OLLAMA_URL = f"{_OLLAMA_BASE.rstrip('/')}/api/generate"
@@ -30,8 +32,10 @@ OLLAMA_MODEL_ANALYSIS = "minha-lora-json"
 OLLAMA_MODEL_GENERAL = "minha-lora-docs"
 OLLAMA_TIMEOUT = 120
 OLLAMA_MODEL = OLLAMA_MODEL_ANALYSIS
+OLLAMA_RETRIES = 3
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB para uploads
 
 # Utilidades simples de formato
 def format_bytes(num: int) -> str:
@@ -43,20 +47,23 @@ def format_bytes(num: int) -> str:
 
 
 def call_local_llm(prompt: str, *, model: Optional[str] = None) -> str:
-    """Chama o modelo registrado no Ollama e retorna o texto bruto."""
+    """Chama o modelo registrado no Ollama com retry/backoff."""
     target_model = model or OLLAMA_MODEL_ANALYSIS
     payload = {
         "model": target_model,
         "prompt": prompt,
         "stream": False,
     }
-    try:
-        resp = requests.post(OLLAMA_URL, json=payload, timeout=OLLAMA_TIMEOUT)
-        resp.raise_for_status()
-        data = resp.json()
-        return data.get("response", "")
-    except Exception:
-        return ""
+    for attempt in range(1, OLLAMA_RETRIES + 1):
+        try:
+            resp = requests.post(OLLAMA_URL, json=payload, timeout=OLLAMA_TIMEOUT)
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("response", "")
+        except Exception:
+            if attempt == OLLAMA_RETRIES:
+                return ""
+            time.sleep(1.5 * attempt)
 
 
 def _load_text(file_name: str) -> Optional[str]:
@@ -2145,7 +2152,10 @@ def upload():
         return redirect(url_for("home"))
 
     for f in files:
-        save_path = UPLOAD_DIR / f.filename
+        safe_name = secure_filename(f.filename)
+        if not safe_name:
+            continue
+        save_path = UPLOAD_DIR / safe_name
         f.save(save_path)
 
     # Atualiza saídas do scanner e da IA local automaticamente
@@ -2153,14 +2163,17 @@ def upload():
     subprocess.call(["python3", "ia_local_analise.py", "--auto"])
 
     for f in files:
-        submit_ia_task(f.filename, model=OLLAMA_MODEL_ANALYSIS)
+        safe_name = secure_filename(f.filename)
+        if safe_name:
+            submit_ia_task(safe_name, model=OLLAMA_MODEL_ANALYSIS)
 
     return redirect(url_for("home"))
 
 
 @app.route("/delete/<file_name>", methods=["POST"])
 def delete_file(file_name):
-    target = UPLOAD_DIR / file_name
+    safe_name = secure_filename(file_name)
+    target = UPLOAD_DIR / safe_name
     removed = False
     if target.exists():
         try:
@@ -2206,7 +2219,8 @@ def ver(file_name):
         except Exception:
             detailed = {}
 
-    candidates = [file_name, f"{file_name}.txt"]
+    safe_name = secure_filename(file_name)
+    candidates = [safe_name, f"{safe_name}.txt"]
     ia_file = None
     for name in candidates:
         candidate = IA_DIR / f"{name}.json"
@@ -2273,14 +2287,15 @@ def ia_status():
 @app.route("/ia/reprocess/<file_name>", methods=["POST"])
 def reprocess_ia(file_name):
     mode = request.form.get("mode")
+    safe_name = secure_filename(file_name)
     model = OLLAMA_MODEL_ANALYSIS if mode != "general" else OLLAMA_MODEL_GENERAL
-    ensure_ia_analysis(file_name, model=model)
+    ensure_ia_analysis(safe_name, model=model)
     return redirect(url_for('ia_status'))
 
 
 @app.route("/ia/delete/<file_name>", methods=["POST"])
 def delete_ia_entry(file_name):
-    safe = Path(file_name).name
+    safe = secure_filename(file_name)
     targets = [
         IA_DIR / f"{safe}.json",
         IA_DIR / f"{safe}.json.raw.txt",
