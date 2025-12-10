@@ -13,26 +13,42 @@ from datetime import datetime
 from typing import Optional, Tuple, Dict, List
 import requests
 from concurrent.futures import ThreadPoolExecutor, Future
-try:
-    from vectorizer import Vectorizer
-except Exception:
-    Vectorizer = None
 import threading
 import re
 import string
 from textwrap import dedent
-import numpy as np
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
 import time
+import asyncio
+from project.app.rag_local import get_context_for_query_sync, get_context_for_query, rebuild_corpus_sync
+from project.app.llm_utils import (
+    preload_model,
+    optimize_prompt,
+    call_ollama_stream,
+    rag_search_async,
+    select_model,
+)
 
-_OLLAMA_BASE = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
-OLLAMA_URL = f"{_OLLAMA_BASE.rstrip('/')}/api/generate"
-OLLAMA_MODEL_ANALYSIS = "minha-lora-json"
-OLLAMA_MODEL_GENERAL = "minha-lora-docs"
+# Por padrão, assume o serviço "ollama" do docker-compose
+_OLLAMA_BASE = os.getenv("OLLAMA_URL", "http://ollama:11434")
+OLLAMA_URL = (
+    _OLLAMA_BASE
+    if "/api/generate" in _OLLAMA_BASE
+    else f"{_OLLAMA_BASE.rstrip('/')}/api/generate"
+)
+# Modelos padrão (podem ser sobrescritos por variáveis de ambiente)
+OLLAMA_MODEL_ANALYSIS = os.getenv("OLLAMA_MODEL_ANALYSIS", "llama3.1:8b")
+OLLAMA_MODEL_GENERAL = os.getenv("OLLAMA_MODEL_GENERAL", "llama3.1:8b")
+OLLAMA_MODEL_LIGHT = os.getenv("OLLAMA_MODEL_LIGHT") or OLLAMA_MODEL_GENERAL
 OLLAMA_TIMEOUT = 120
 OLLAMA_MODEL = OLLAMA_MODEL_ANALYSIS
 OLLAMA_RETRIES = 3
+
+# Preload dos modelos principais para reduzir a primeira latência
+try:
+    preload_model(OLLAMA_MODEL_GENERAL)
+    preload_model(OLLAMA_MODEL_ANALYSIS)
+except Exception:
+    pass
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB para uploads
@@ -235,29 +251,6 @@ INDEX_JSON = SAIDA_DIR / "_docs_index.json"
 ANALISE_JSON = SAIDA_DIR / "analise_detalhada.json"
 CHAT_TOP_K = 3
 
-# corpus TF-IDF para chatbot (usa texto bruto do scanner)
-def _load_chat_corpus():
-    texts = []
-    titles = []
-    for path in sorted(TEXT_DIR.glob("*.txt")):
-        try:
-            txt = path.read_text(encoding="utf-8", errors="ignore")
-            if not txt.strip():
-                continue
-            texts.append(txt[:4000])
-            titles.append(path.name)
-        except Exception:
-            continue
-        if len(texts) >= 200:
-            break
-    if not texts:
-        return None, None, []
-    vect = TfidfVectorizer(max_features=5000, stop_words=None)
-    matrix = vect.fit_transform(texts)
-    return vect, matrix, texts
-
-CHAT_VECTORIZER, CHAT_MATRIX, CHAT_RAW_TEXTS = _load_chat_corpus()
-
 executor = ThreadPoolExecutor(max_workers=2)
 pending_tasks: Dict[str, Future] = {}
 tasks_lock = threading.Lock()
@@ -306,39 +299,6 @@ def select_relevant_sections(text: str, top_k: int = 3) -> List[str]:
     return scored[:top_k]
 
 
-def select_with_vectorizer(text: str, query: str = "resuma em JSON estruturado", top_k: int = 3) -> List[str]:
-    """
-    Seleção opcional usando hivellm/vectorizer, se instalado.
-    Fallback seguro: se der erro ou lib ausente, retorna lista vazia.
-    """
-    if not Vectorizer:
-        return []
-    try:
-        chunks = chunk_text(text)
-        if not chunks:
-            return []
-        vec = Vectorizer()
-        # Muitos wrappers de embedding expõem .embed; se não houver, aborta.
-        if not hasattr(vec, "embed"):
-            return []
-        chunk_vecs = vec.embed(chunks)
-        query_vec = vec.embed([query])[0]
-        # Similaridade coseno manual, sem depender de outras libs
-        def cosine(a, b):
-            import math
-            dot = sum(x*y for x, y in zip(a, b))
-            na = math.sqrt(sum(x*x for x in a))
-            nb = math.sqrt(sum(y*y for y in b))
-            return dot / (na * nb + 1e-9)
-        scored = []
-        for seg, v in zip(chunks, chunk_vecs):
-            scored.append((cosine(query_vec, v), seg))
-        scored.sort(reverse=True, key=lambda t: t[0])
-        return [s for _, s in scored[:top_k]]
-    except Exception:
-        return []
-
-
 def extract_focus_sections(text: str, max_len: int = 800) -> Dict[str, List[str]]:
     entities = re.findall(r"\b[A-Z][A-Za-zÀ-ÖØ-öø-ÿ]{2,}(?:\s+[A-Z][A-Za-zÀ-ÖØ-öø-ÿ]{2,})*\b", text)
     dates = re.findall(r"\b\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\b|\b\d{4}\b", text)
@@ -368,8 +328,7 @@ def build_focused_prompt(file_name: str, text: str, doc_type: Optional[str] = No
     text = normalize_text(text)
     focus = extract_focus_sections(text)
     trimmed_text = text[:6000]
-    vec_segments = select_with_vectorizer(text, top_k=3)
-    top_segments = vec_segments if vec_segments else select_relevant_sections(text)
+    top_segments = select_relevant_sections(text)
 
     parts = ["Você é um analista especializado em documentos.", "Responda APENAS em JSON válido com campos:",
              "{\n  \"tipo_documento\": \"...\",\n  \"resumo\": \"...\",\n  \"palavras_chave\": [...],\n  \"entidades\": [...],\n  \"datas_importantes\": [...],\n  \"valores_monetarios\": [...],\n  \"riscos\": [...],\n  \"observacoes\": \"...\"\n}"]
@@ -538,10 +497,23 @@ def gather_training_metrics():
     lora_dir = str(LORA_DIR) if LORA_DIR.exists() else "—"
     gguf_path = str(GGUF_PATH) if GGUF_PATH.exists() else "—"
 
-    models_list = []
+    corpus_count = 0
+    corpus_size = "0 B"
     try:
-        resp = requests.get("http://127.0.0.1:11434/api/tags", timeout=3)
+        corpus_files = list(TEXT_DIR.glob("*.txt"))
+        corpus_count = len(corpus_files)
+        corpus_bytes = sum(p.stat().st_size for p in corpus_files if p.exists())
+        corpus_size = format_bytes(corpus_bytes) if corpus_bytes else "0 B"
+    except Exception:
+        corpus_count = 0
+        corpus_size = "0 B"
+
+    models_list = []
+    ollama_up = False
+    try:
+        resp = requests.get("http://ollama:11434/api/tags", timeout=3)
         data = resp.json()
+        ollama_up = True
         for m in data.get("models", []):
             models_list.append(m.get("name"))
     except Exception:
@@ -557,6 +529,11 @@ def gather_training_metrics():
         "lora_dir": lora_dir,
         "gguf_path": gguf_path,
         "ollama_models": models_list or ["—"],
+        "ollama_model_general": OLLAMA_MODEL_GENERAL,
+        "ollama_model_analysis": OLLAMA_MODEL_ANALYSIS,
+        "corpus_count": corpus_count,
+        "corpus_size": corpus_size,
+        "ollama_up": ollama_up,
     }
 
 # ==========================
@@ -990,6 +967,41 @@ HOME_TEMPLATE = """
     body.theme-dark tbody tr:hover {
       background: rgba(255,255,255,0.05);
     }
+
+    /* Chat flutuante GPT-style */
+    :root {
+      --chat-bg: #0f172a; --chat-panel: #0b1220; --chat-accent: #22c55e;
+      --chat-bot: #1e293b; --chat-user: #22c55e; --chat-text: #e5e7eb;
+    }
+    .chat-fab{
+      position:fixed;right:18px;bottom:18px;width:56px;height:56px;border-radius:50%;
+      background:var(--chat-accent);border:none;color:#022c22;font-size:24px;cursor:pointer;
+      box-shadow:0 16px 40px rgba(0,0,0,.45);z-index:9999;transition:.18s
+    }
+    .chat-fab:hover{transform:translateY(-2px);box-shadow:0 20px 50px rgba(0,0,0,.6)}
+    .chat-panel{
+      position:fixed;right:18px;bottom:80px;width:min(360px,90vw);height:520px;
+      background:var(--chat-panel);color:var(--chat-text);border-radius:18px;
+      border:1px solid rgba(148,163,184,.25);box-shadow:0 24px 60px rgba(0,0,0,.75);
+      display:flex;flex-direction:column;transform:translateY(10px) scale(.98);
+      opacity:0;pointer-events:none;transition:.18s;z-index:9999}
+    .chat-panel.open{opacity:1;transform:translateY(0) scale(1);pointer-events:auto;}
+    .chat-header{padding:12px 14px;background:linear-gradient(135deg,#22c55e,#15803d);
+      color:#022c22;display:flex;align-items:center;justify-content:space-between;font-weight:600}
+    .chat-header small{font-weight:400;opacity:.9}
+    .chat-messages{flex:1;padding:12px;overflow-y:auto;display:flex;flex-direction:column;gap:10px;background:var(--chat-bg)}
+    .msg{max-width:85%;padding:10px 12px;border-radius:14px;font-size:13px;line-height:1.45;
+      animation:fade .2s ease;white-space:pre-wrap;word-break:break-word}
+    .msg.bot{background:var(--chat-bot);color:var(--chat-text);align-self:flex-start;border:1px solid rgba(148,163,184,.35)}
+    .msg.user{background:var(--chat-user);color:#022c22;align-self:flex-end;font-weight:600}
+    .chat-input{padding:10px;display:flex;gap:8px;border-top:1px solid rgba(148,163,184,.25);background:var(--chat-panel)}
+    .chat-input input{flex:1;padding:10px;border-radius:12px;border:1px solid rgba(148,163,184,.35);
+      background:#0a1020;color:var(--chat-text);outline:none;font-size:13px}
+    .chat-input button{padding:10px 14px;border-radius:12px;border:none;background:var(--chat-accent);
+      color:#022c22;font-weight:700;cursor:pointer;transition:.12s}
+    .chat-input button:disabled{opacity:.5;cursor:default}
+    .typing{font-size:12px;color:#9ca3af;padding:0 12px 6px;display:none}
+    @keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
   </style>
 </head>
 <body class="{{ 'theme-dark' if request.cookies.get('theme')=='dark' else '' }}">
@@ -1206,6 +1218,23 @@ HOME_TEMPLATE = """
     </div>
   </main>
 
+  <!-- CHAT ChatDocAI · WIDGET FLUTUANTE -->
+  <div class="chat-panel" id="chatPanel">
+    <div class="chat-header">
+      <div>ChatDocAI — Assistente Oficial <small>(Corpus Local)</small></div>
+      <button aria-label="Fechar" style="background:none;border:none;font-size:16px;cursor:pointer" onclick="toggleChat()">✕</button>
+    </div>
+    <div class="chat-messages" id="chatMessages">
+      <div class="msg bot">Olá! Sou o assistente oficial. Pergunte algo sobre os documentos.</div>
+    </div>
+    <div class="typing" id="chatTyping">O assistente está digitando…</div>
+    <div class="chat-input">
+      <input id="chatInput" type="text" placeholder="Digite sua pergunta..." onkeydown="if(event.key==='Enter')sendMessage()">
+      <button id="chatSend" onclick="sendMessage()">Enviar</button>
+    </div>
+  </div>
+  <button class="chat-fab" onclick="toggleChat()">💬</button>
+
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script>
@@ -1309,6 +1338,63 @@ HOME_TEMPLATE = """
     if (searchInput) searchInput.addEventListener('input', applyFilters);
     if (filterType)  filterType.addEventListener('change', applyFilters);
     if (filterExt)   filterExt.addEventListener('change', applyFilters);
+
+    // Chat flutuante integrado ao Flask (/chat_saa)
+    const CHAT_API = "/chat_saa";
+    const panel = document.getElementById("chatPanel");
+    const msgs  = document.getElementById("chatMessages");
+    const input = document.getElementById("chatInput");
+    const send  = document.getElementById("chatSend");
+    const typing= document.getElementById("chatTyping");
+    let sending = false;
+
+    window.toggleChat = () => {
+      panel.classList.toggle("open");
+      if(panel.classList.contains("open")) input.focus();
+    };
+
+    function addMsg(text, who="bot") {
+      const div = document.createElement("div");
+      div.className = "msg " + who;
+      div.textContent = text;
+      msgs.appendChild(div);
+      msgs.scrollTop = msgs.scrollHeight;
+    }
+
+    async function sendMessage() {
+      const text = input.value.trim();
+      if(!text || sending) return;
+      sending = true; send.disabled = true; input.value = "";
+      addMsg(text, "user"); typing.style.display = "block";
+
+      try {
+        const resp = await fetch(CHAT_API, {
+          method:"POST",
+          headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({message:text})
+        });
+        if(!resp.ok) throw new Error("HTTP "+resp.status);
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let acc = "";
+        while(true){
+          const {value, done} = await reader.read();
+          if(done) break;
+          acc += decoder.decode(value, {stream:true});
+        }
+        const answer = acc.trim() || "Sem resposta no momento.";
+        addMsg(answer, "bot");
+      } catch(err){
+        console.error(err);
+        addMsg("Não consegui responder agora. Tente novamente em instantes.", "bot");
+      } finally {
+        typing.style.display = "none";
+        sending = false; send.disabled = false;
+        input.focus();
+      }
+    }
+
+    window.sendMessage = sendMessage;
   </script>
 </body>
 </html>
@@ -1707,6 +1793,74 @@ DETAIL_TEMPLATE = """
       }
     })();
   </script>
+
+  <!-- Chat flutuante na home -->
+  <div class="chat-widget" id="chatWidgetHome">
+    <div class="chat-widget-header">
+      <div>
+        <strong>Chat SAA</strong>
+        <div class="sub">Assistente oficial · Corpus local</div>
+      </div>
+      <button class="btn btn-sm btn-light" id="chatCloseHome">&times;</button>
+    </div>
+    <div class="chat-widget-body" id="chatBodyHome"></div>
+    <form id="chatFormHome" class="chat-widget-form">
+      <textarea class="form-control" id="chatInputHome" rows="2" placeholder="Digite sua pergunta..." required></textarea>
+      <button class="btn btn-primary w-100 mt-2" type="submit">Enviar</button>
+    </form>
+  </div>
+  <button class="chat-fab" id="chatToggleHome">
+    <span class="dot"></span>
+    <span>Chat SAA</span>
+  </button>
+
+  <script>
+    (() => {
+      const chatWidget = document.getElementById('chatWidgetHome');
+      const chatToggle = document.getElementById('chatToggleHome');
+      const chatClose = document.getElementById('chatCloseHome');
+      const chatBody = document.getElementById('chatBodyHome');
+      const chatForm = document.getElementById('chatFormHome');
+      const chatInput = document.getElementById('chatInputHome');
+
+      function addMsg(role, text) {
+        const el = document.createElement('div');
+        el.className = 'chat-msg ' + role;
+        el.innerHTML = `<div class="meta">${role === 'user' ? 'Você' : 'Assistente'}</div><div>${text}</div>`;
+        chatBody.appendChild(el);
+        chatBody.scrollTop = chatBody.scrollHeight;
+      }
+
+      chatToggle?.addEventListener('click', () => {
+        chatWidget.classList.add('show');
+        chatToggle.style.display = 'none';
+        chatInput.focus();
+      });
+      chatClose?.addEventListener('click', () => {
+        chatWidget.classList.remove('show');
+        chatToggle.style.display = 'inline-flex';
+      });
+
+      chatForm?.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const msg = chatInput.value.trim();
+        if (!msg) return;
+        addMsg('user', msg);
+        chatInput.value = '';
+        try {
+          const resp = await fetch('{{ url_for("chat_inline") }}', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: msg })
+          });
+          const data = await resp.json();
+          addMsg('bot', data.answer || 'Sem resposta no momento.');
+        } catch (err) {
+          addMsg('bot', 'Falha ao consultar o modelo local.');
+        }
+      });
+    })();
+  </script>
 </body>
 </html>
 """
@@ -1778,11 +1932,48 @@ IA_STATUS_TEMPLATE = """
       <div>
         <h1>Status das análises IA</h1>
         <small>Monitoramento de jobs, modelos e histórico</small>
+        <div class="mt-2 d-flex flex-wrap gap-2">
+          <span class="badge-soft">Modelo geral: {{ ollama_model_general or "não definido" }}</span>
+          <span class="badge-soft">Modelo análise: {{ ollama_model_analysis or "não definido" }}</span>
+          <span class="badge-soft">Corpus: {{ corpus_count }} arquivos</span>
+          <span class="badge-soft">Ollama: {{ "ON" if metrics.ollama_up else "OFF" }}</span>
+        </div>
       </div>
       <div class="d-flex gap-2">
         <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('home') }}">Voltar</a>
         <a class="btn btn-warning btn-sm text-dark" href="{{ url_for('treino') }}">Painel de Treino</a>
         <button id="themeToggleStatus" class="btn btn-outline-secondary btn-sm">Tema</button>
+      </div>
+    </div>
+
+    <div class="row g-3 mb-3">
+      <div class="col-md-3">
+        <div class="card-dark p-3 h-100">
+          <div class="text-muted text-uppercase small">Concluídos</div>
+          <div class="fw-bold fs-3">{{ total_processed }}</div>
+          <div class="small text-muted">análises finalizadas</div>
+        </div>
+      </div>
+      <div class="col-md-3">
+        <div class="card-dark p-3 h-100">
+          <div class="text-muted text-uppercase small">Pendentes</div>
+          <div class="fw-bold fs-3">{{ total_pending }}</div>
+          <div class="small text-muted">aguardando processamento</div>
+        </div>
+      </div>
+      <div class="col-md-3">
+        <div class="card-dark p-3 h-100">
+          <div class="text-muted text-uppercase small">Corpus RAG</div>
+          <div class="fw-bold fs-3">{{ metrics.corpus_count }}</div>
+          <div class="small text-muted">{{ metrics.corpus_size }}</div>
+        </div>
+      </div>
+      <div class="col-md-3">
+        <div class="card-dark p-3 h-100">
+          <div class="text-muted text-uppercase small">Modelos carregados</div>
+          <div class="fw-bold fs-6">{{ metrics.ollama_models|join(", ") }}</div>
+          <div class="small text-muted">Ollama {{ "ativo" if metrics.ollama_up else "indisponível" }}</div>
+        </div>
       </div>
     </div>
 
@@ -1794,11 +1985,11 @@ IA_STATUS_TEMPLATE = """
       <div class="col-md-3">
         <label class="form-label">Modelo</label>
         <select name="model" class="form-select">
-          <option value="">Todos</option>
-          <option value="analysis" {% if filters.model=='analysis' %}selected{% endif %}>JSON only</option>
-          <option value="general" {% if filters.model=='general' %}selected{% endif %}>Geral</option>
-        </select>
-      </div>
+            <option value="">Todos</option>
+            <option value="analysis" {% if filters.model=='analysis' %}selected{% endif %}>JSON only</option>
+            <option value="general" {% if filters.model=='general' %}selected{% endif %}>Geral</option>
+          </select>
+        </div>
       <div class="col-md-3">
         <label class="form-label">Status</label>
         <select name="status" class="form-select">
@@ -1919,6 +2110,7 @@ TRAIN_TEMPLATE = """
       <div>
         <h1 class="h4 mb-1">Painel de Treinamento e Métricas</h1>
         <div class="text-muted small">Dataset · LoRA · Conversão GGUF · Registro Ollama</div>
+        <div class="small text-muted mt-1">Modelo geral: {{ metrics.ollama_model_general or "—" }} · Modelo análise: {{ metrics.ollama_model_analysis or "—" }}</div>
       </div>
       <div class="d-flex gap-2">
         <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('home') }}">Voltar</a>
@@ -1962,6 +2154,28 @@ TRAIN_TEMPLATE = """
             <div class="text-muted text-uppercase small">LoRA / GGUF</div>
             <div class="fw-bold fs-6">{{ metrics.lora_dir }}</div>
             <div class="small text-muted">GGUF: {{ metrics.gguf_path }}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="row g-3 mb-3">
+      <div class="col-md-3">
+        <div class="card shadow-sm h-100">
+          <div class="card-body">
+            <div class="text-muted text-uppercase small">Corpus RAG</div>
+            <div class="fw-bold fs-4">{{ metrics.corpus_count }}</div>
+            <div class="small text-muted">arquivos em texto_bruto</div>
+            <div class="small text-muted mt-1">Tamanho: {{ metrics.corpus_size }}</div>
+          </div>
+        </div>
+      </div>
+      <div class="col-md-3">
+        <div class="card shadow-sm h-100">
+          <div class="card-body">
+            <div class="text-muted text-uppercase small">Serviços</div>
+            <div class="fw-bold fs-6">{{ "Ollama ON" if metrics.ollama_up else "Ollama OFF" }}</div>
+            <div class="small text-muted">Modelos: {{ metrics.ollama_models|join(", ") }}</div>
           </div>
         </div>
       </div>
@@ -2103,6 +2317,93 @@ TRAIN_TEMPLATE = """
       });
     }
   </script>
+
+  <!-- Chatbot fixo/flutuante no canto -->
+  <div class="chat-widget" id="chatWidget">
+    <div class="chat-widget-header">
+      <div>
+        <strong>Chat SAA</strong>
+        <div class="sub">Assistente com base no corpus</div>
+      </div>
+      <button class="btn btn-sm btn-light" id="chatClose">&times;</button>
+    </div>
+    <div class="chat-widget-body" id="chatBody"></div>
+    <form id="chatForm" class="chat-widget-form">
+      <textarea class="form-control" id="chatInput" rows="2" placeholder="Digite sua pergunta..." required></textarea>
+      <button class="btn btn-primary w-100 mt-2" type="submit">Enviar</button>
+    </form>
+  </div>
+  <button class="chat-fab" id="chatToggle">
+    <span class="dot"></span>
+    <span>Chat SAA</span>
+  </button>
+
+  <script>
+    (() => {
+      const chatWidget = document.getElementById('chatWidget');
+      const chatToggle = document.getElementById('chatToggle');
+      const chatClose = document.getElementById('chatClose');
+      const chatBody = document.getElementById('chatBody');
+      const chatForm = document.getElementById('chatForm');
+      const chatInput = document.getElementById('chatInput');
+      const typingEl = document.createElement('div');
+      typingEl.className = 'chat-msg bot';
+      typingEl.textContent = 'Digitando...';
+      let sending = false;
+
+      function addMsg(role, text) {
+        const el = document.createElement('div');
+        el.className = 'chat-msg ' + role;
+        el.innerHTML = `<div class="meta">${role === 'user' ? 'Você' : 'Assistente'}</div><div>${text}</div>`;
+        chatBody.appendChild(el);
+        chatBody.scrollTop = chatBody.scrollHeight;
+        return el;
+      }
+
+      chatToggle?.addEventListener('click', () => {
+        chatWidget.classList.add('show');
+        chatToggle.style.display = 'none';
+        chatInput.focus();
+      });
+      chatClose?.addEventListener('click', () => {
+        chatWidget.classList.remove('show');
+        chatToggle.style.display = 'inline-flex';
+      });
+
+      chatForm?.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const msg = chatInput.value.trim();
+        if (!msg || sending) return;
+        sending = true;
+        const userEl = addMsg('user', msg);
+        chatInput.value = '';
+        chatBody.appendChild(typingEl);
+        chatBody.scrollTop = chatBody.scrollHeight;
+        let botEl = addMsg('bot', '');
+
+        try {
+          const resp = await fetch('{{ url_for("chat_saa") }}', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: msg })
+          });
+          const reader = resp.body.getReader();
+          const decoder = new TextDecoder();
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            botEl.innerHTML += decoder.decode(value, { stream: true });
+            chatBody.scrollTop = chatBody.scrollHeight;
+          }
+        } catch (err) {
+          botEl.textContent = 'Falha ao consultar o modelo local.';
+        } finally {
+          typingEl.remove();
+          sending = false;
+        }
+      });
+    })();
+  </script>
 </body>
 </html>
 """
@@ -2167,6 +2468,12 @@ def upload():
         if safe_name:
             submit_ia_task(safe_name, model=OLLAMA_MODEL_ANALYSIS)
 
+    # Reindexa o corpus de RAG após novas inserções
+    try:
+        rebuild_corpus_sync()
+    except Exception as exc:
+        print(f"[RAG] Falha ao reindexar após upload: {exc}")
+
     return redirect(url_for("home"))
 
 
@@ -2197,6 +2504,10 @@ def delete_file(file_name):
     if removed:
         subprocess.call(["python3", "scanner_docs.py", "--auto"])
         subprocess.call(["python3", "ia_local_analise.py", "--auto"])
+        try:
+            rebuild_corpus_sync()
+        except Exception as exc:
+            print(f"[RAG] Falha ao reindexar após deleção: {exc}")
 
     return redirect(url_for("home"))
 
@@ -2253,13 +2564,17 @@ def ver(file_name):
 
 @app.route("/ia/status")
 def ia_status():
-    entries = list_ia_status()
+    entries_all = list_ia_status()
     q = request.args.get("q", "").lower()
     model_filter = request.args.get("model", "")
     status_filter = request.args.get("status", "")
 
+    # resumo geral antes do filtro
+    total_processed = sum(1 for e in entries_all if not e["pending"])
+    total_pending = sum(1 for e in entries_all if e["pending"])
+
     filtered = []
-    for e in entries:
+    for e in entries_all:
         if q and q not in e["file"].lower():
             continue
         if model_filter == "analysis" and e["model"] != OLLAMA_MODEL_ANALYSIS:
@@ -2276,11 +2591,22 @@ def ia_status():
         history = list(pipeline_history)
 
     filters = {"q": request.args.get("q", ""), "model": model_filter, "status": status_filter}
+
+    # contagem do corpus para exibir na hero
+    metrics = gather_training_metrics()
+    corpus_count = metrics.get("corpus_count", 0)
+
     return render_template_string(
         IA_STATUS_TEMPLATE,
         entries=filtered,
         filters=filters,
         history=history,
+        corpus_count=corpus_count,
+        ollama_model_general=OLLAMA_MODEL_GENERAL,
+        ollama_model_analysis=OLLAMA_MODEL_ANALYSIS,
+        total_processed=total_processed,
+        total_pending=total_pending,
+        metrics=metrics,
     )
 
 
@@ -2357,7 +2683,7 @@ def health_ia():
     """Ping simples no Ollama e nos arquivos críticos."""
     status = {"ollama": "down", "models": [], "dataset": "absent", "ia_dir": IA_DIR.exists()}
     try:
-        resp = requests.get("http://127.0.0.1:11434/api/tags", timeout=2)
+        resp = requests.get("http://ollama:11434/api/tags", timeout=2)
         data = resp.json()
         status["ollama"] = "up"
         status["models"] = [m.get("name") for m in data.get("models", [])]
@@ -2473,6 +2799,26 @@ chat_history = []
 
 def chat_completion(message: str, history: list) -> str:
     """Gera resposta usando histórico curto + RAG básico sobre texto bruto."""
+    def build_saa_prompt(context_block: str, question: str) -> str:
+        return f"""
+Você é o motor de IA do projeto ScanDocs / SAA Assistant, rodando localmente via Ollama.
+Use apenas o CONTEXTO/REG abaixo e a pergunta do usuário. Não use conhecimento externo.
+
+Regras gerais:
+- Resposta em português, curta e objetiva (2–5 linhas). Use bullets curtos se ajudar.
+- Não invente nada fora do CONTEXTO/REG; se faltar informação, diga: "Não encontrei essa informação nos documentos fornecidos. Recomendo confirmar com a SAA."
+- Se houver conflito, siga o REG mais recente; se não der para resolver, informe a divergência.
+- Não fale sobre IA/modelo; mantenha tom institucional e acolhedor.
+
+CONTEXTO/REG:
+{context_block or "(sem contexto disponível)"}
+
+PERGUNTA DO USUÁRIO:
+{question}
+
+Responda com precisão, sem alucinação. Termine opcionalmente com "Se precisar de algo mais, posso ajudar."
+""".strip()
+
     try:
         trimmed = history[-6:]
         parts = []
@@ -2482,29 +2828,26 @@ def chat_completion(message: str, history: list) -> str:
         parts.append(f"Usuário: {message}")
 
         contexts = []
-        if CHAT_VECTORIZER is not None and CHAT_MATRIX is not None:
-            try:
-                q_vec = CHAT_VECTORIZER.transform([message])
-                sims = cosine_similarity(q_vec, CHAT_MATRIX).flatten()
-                idxs = sims.argsort()[::-1][:CHAT_TOP_K]
-                for idx in idxs:
-                    if sims[idx] <= 0:
-                        continue
-                    contexts.append(CHAT_RAW_TEXTS[idx])
-            except Exception:
-                contexts = []
+        try:
+            ctx = get_context_for_query_sync(message, top_k=CHAT_TOP_K)
+            if ctx:
+                contexts = [ctx]
+        except Exception as exc:
+            print(f"[CHAT] RAG indisponível: {exc}")
 
-        prompt_blocks = []
         if contexts:
-            prompt_blocks.append("Contexto recuperado:")
-            for i, ctx in enumerate(contexts, 1):
-                prompt_blocks.append(f"[{i}] {ctx[:1200]}")
-        prompt_blocks.append("Histórico curto:")
-        prompt_blocks.extend(parts)
-        prompt_blocks.append("Assistente:")
+            prompt = build_saa_prompt(contexts[0], message)
+        else:
+            prompt_blocks = []
+            prompt_blocks.append("Histórico curto:")
+            prompt_blocks.extend(parts)
+            prompt_blocks.append("Assistente:")
+            prompt = "\n\n".join(prompt_blocks)
 
-        prompt = "\n\n".join(prompt_blocks)
-        return call_local_llm(prompt, model=OLLAMA_MODEL_GENERAL)
+        reply = call_local_llm(prompt, model=OLLAMA_MODEL_GENERAL)
+        if not reply.strip():
+            return "No momento não consegui obter resposta do modelo. Tente novamente em instantes ou contate a SAA."
+        return reply
     except Exception:
         return ""
 
@@ -2521,6 +2864,42 @@ def chat():
             chat_history.append({"role": "assistant", "content": resp, "ts": datetime.utcnow().isoformat()})
         return redirect(url_for("chat"))
     return render_template_string(CHAT_TEMPLATE, history=chat_history)
+
+@app.route("/chat_inline", methods=["POST"])
+def chat_inline():
+    """Endpoint streaming usado pelo chat flutuante na home."""
+    global chat_history
+    data = request.get_json(silent=True) or {}
+    msg = (data.get("message") or "").strip()
+    if not msg:
+        return jsonify({"answer": "Mensagem vazia."})
+
+    model = select_model(msg)
+
+    async def prepare():
+        ctx, rag_ms = await rag_search_async(get_context_for_query, msg, top_k=CHAT_TOP_K)
+        prompt = optimize_prompt(msg, ctx, max_chars=1200)
+        return prompt, ctx, rag_ms
+
+    prompt, ctx, rag_ms = asyncio.run(prepare())
+
+    def generate():
+        buffer = []
+        for tok in call_ollama_stream(prompt, model):
+            buffer.append(tok)
+            yield tok
+        full = "".join(buffer).strip()
+        ts = datetime.utcnow().isoformat()
+        chat_history.append({"role": "user", "content": msg, "ts": ts})
+        chat_history.append({"role": "assistant", "content": full or "(sem resposta)", "ts": datetime.utcnow().isoformat()})
+        print(f"[CHAT] RAG={rag_ms or 'timeout'} ms | ctx_len={len(ctx) if ctx else 0} | model={model}")
+
+    return app.response_class(generate(), mimetype="text/plain")
+
+# Alias para integração com widgets externos (/chat_saa)
+@app.route("/chat_saa", methods=["POST"])
+def chat_saa():
+    return chat_inline()
 
 
 @app.route("/api/chat", methods=["POST"])

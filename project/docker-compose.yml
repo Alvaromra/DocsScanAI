@@ -1,17 +1,23 @@
 services:
   api:
     build: .
-    working_dir: /app
-    entrypoint: ["/bin/bash", "/app/start.sh"]
+    working_dir: /app/project
+    entrypoint: ["bash", "/app/project/start.sh"]
     command: []
     env_file:
       - .env
     environment:
       OLLAMA_URL: http://ollama:11434
+      # Modelos ajustados para caber em menos RAM (phi3:mini é leve)
+      OLLAMA_MODEL_GENERAL: phi3:mini
+      OLLAMA_MODEL_ANALYSIS: phi3:mini
+      OLLAMA_MODEL_LIGHT: phi3:mini
+      RAG_TEXT_DIR: /app/saida/texto_bruto
+      PYTHONPATH: /app:/app/project:/usr/local/lib/python3.10/site-packages:/root/.local/lib/python3.10/site-packages
     ports:
       - "8000:8000"
     volumes:
-      - .:/app
+      - ..:/app
     networks:
       - ai_network
     depends_on:
@@ -33,17 +39,24 @@ services:
 
   flask:
     build: .
-    entrypoint: ["python", "/workspace/app.py", "--host", "0.0.0.0", "--port", "5000"]
+    entrypoint: ["sh", "/workspace/project/scripts/run_flask.sh"]
     command: []
     working_dir: /workspace
     env_file:
       - .env
     environment:
       OLLAMA_URL: http://ollama:11434
+      # Modelos ajustados para caber em menos RAM (phi3:mini é leve)
+      OLLAMA_MODEL_GENERAL: phi3:mini
+      OLLAMA_MODEL_ANALYSIS: phi3:mini
+      OLLAMA_MODEL_LIGHT: phi3:mini
+      RAG_TEXT_DIR: /workspace/saida/texto_bruto
+      PYTHONPATH: /workspace:/workspace/project:/usr/local/lib/python3.10/site-packages:/root/.local/lib/python3.10/site-packages
     ports:
       - "5001:5000"
     volumes:
       - ..:/workspace
+      - ../saida:/workspace/saida
     networks:
       - ai_network
     depends_on:
