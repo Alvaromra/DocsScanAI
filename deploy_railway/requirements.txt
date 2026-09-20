@@ -1,0 +1,8 @@
+flask
+requests
+gunicorn
+# Adicione aqui outras dependências do seu app, por exemplo:
+# python-dotenv
+# pydantic
+# pdfplumber
+# ...

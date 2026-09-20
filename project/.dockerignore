@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.pdf
+!requirements.txt
+models/
+.env
+.git

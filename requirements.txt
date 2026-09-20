@@ -1,0 +1,19 @@
+# Dependências para rodar localmente (scanner + web app Flask)
+# pip install -r requirements.txt
+
+flask>=3.0
+requests>=2.31
+scikit-learn>=1.4
+pandas>=2.1
+PyPDF2>=3.0
+openpyxl>=3.1
+python-docx>=1.1
+reportlab>=4.0
+
+# NLP: lematização para o RAG, idioma e entidades no scanner.
+# 3.8.16+ tem versão pronta para Python 3.14.
+spacy>=3.8.16,<3.9
+pt_core_news_sm @ https://github.com/explosion/spacy-models/releases/download/pt_core_news_sm-3.8.0/pt_core_news_sm-3.8.0-py3-none-any.whl
+en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
+# Espanhol (opcional):
+# es_core_news_sm @ https://github.com/explosion/spacy-models/releases/download/es_core_news_sm-3.8.0/es_core_news_sm-3.8.0-py3-none-any.whl

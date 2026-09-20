@@ -1,0 +1,22 @@
+fastapi
+uvicorn
+python-multipart
+pydantic
+pdfplumber
+flask
+requests
+PyPDF2
+openpyxl
+python-docx
+reportlab
+pandas
+scikit-learn
+transformers
+torch
+datasets
+sentencepiece
+sqlalchemy
+psycopg2-binary
+spacy>=3.8.16,<3.9
+pt_core_news_sm @ https://github.com/explosion/spacy-models/releases/download/pt_core_news_sm-3.8.0/pt_core_news_sm-3.8.0-py3-none-any.whl
+en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl

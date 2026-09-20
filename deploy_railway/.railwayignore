@@ -1,0 +1,7 @@
+models/
+saida/
+uploads/
+*.gguf
+railway_full/
+railway_upload/
+*.zip
